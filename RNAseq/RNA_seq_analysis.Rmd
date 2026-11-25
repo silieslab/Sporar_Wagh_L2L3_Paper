@@ -1,0 +1,333 @@
+----
+title: RNA Seq Analysis of L2 and L3 laminar Neurons in control as well as different
+  genetic conditions
+output:
+  html_document: default
+  pdf_document: default
+----
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(DESeq2)
+library(TxDb.Dmelanogaster.UCSC.dm6.ensGene)
+library(tximport)
+library(tximportData)
+library(rhdf5)
+library(gplots)
+library(ggplot2)
+library(RColorBrewer)
+library("AnnotationDbi")
+library("org.Dm.eg.db")  # For Drosophila melanogaster Dm
+library(clusterProfiler)
+```
+
+## Part 2- Differential expression analysis of L2 Vs L3
+
+##### Loading the data
+
+Load the data, stored as kallisto tpm (transcript per million counts), by specifying the path and using the tximportData package. The sample file need to be formatted to have columns with appropriate sample identities. Below are the description of the functions used from "tximport" to read the count tables from kallisto.
+
+```{r}
+#setwd("/Volumes/STORAGE1/Analysis_Silies_lab")
+samples <- read.table(file.path(".", "samples_silies_L2_L3.txt"), header = TRUE)
+files_silies_L2_L3 <- file.path(".", "Kallisto_combined", samples$run, "abundance.tsv")
+names(files_silies_L2_L3) <- c("L2_rep1","L2_rep2", "L3_rep1", "L3_rep2")
+files_silies_L2_L3
+txi.kallisto.L2_L3.tsv <- tximport(files_silies_L2_L3, type = "kallisto", tx2gene = tx2gene, ignoreAfterBar = TRUE)
+sampleTable <- data.frame(condition = factor(rep(c("A", "B"), each = 2)))
+rownames(sampleTable) <- colnames(txi.kallisto.L2_L3.tsv$counts)
+```
+Now I would run DESeq2 on the data, which will perform the differential analysis. This would report all the results without the pvalue and fold change filtering.
+
+```{r}
+dds_kallisto_silies_L2_L3 <- DESeqDataSetFromTximport(txi.kallisto.L2_L3.tsv, sampleTable, ~condition)
+dds_kallisto_silies_L2_L3 <- dds_kallisto_silies_L2_L3[ rowSums(counts(dds_kallisto_silies_L2_L3)>1)>=2 ]
+rld_silies_L2_L3 <- rlog(dds_kallisto_silies_L2_L3)
+dds_silies_L2_L3 <- DESeq(dds_kallisto_silies_L2_L3)
+res_silies_L2_L3 <- results(dds_silies_L2_L3)
+```
+#### MA-Plot
+
+From the DESeq2 vignette: The function plotMA shows the log2 fold changes attributable to a given variable over the mean of normalized counts for all the samples in the DESeqDataSet. Points will be colored red if the adjusted p value is less than 0.1. Points which fall out of the window are plotted as open triangles pointing either up or down.
+
+```{r plotMA, echo=TRUE}
+plotMA(results(dds_silies_L2_L3, alpha = 0.01))
+```
+
+```{r}
+res_silies_L2_L3Ordered <- res_silies_L2_L3[order(res_silies_L2_L3$pvalue),]
+write.table(as.data.frame(res_silies_L2_L3Ordered), file="./data_for_tidyverse/L2_Vs_L3_DeSeq2_new.csv", sep = "\t")
+counts_siiles_L2_L3 <- txi.kallisto.L2_L3.tsv$counts
+colnames(counts_siiles_L2_L3)
+write.table(counts_siiles_L2_L3, file = "./data_for_tidyverse/tpm_counts_silies_L2_L3.txt", sep = "\t", row.names = T)
+ # Filter out rows with NAs in the Lof2FC column
+filtered_df <- res_silies_L2_L3Ordered %>% filter(!is.na(log2FoldChange))
+
+# Filter out rows with pvalues > 0.05
+filtered_df <- res_silies_L2_L3Ordered %>% filter(pvalue <= 0.05)
+
+
+# Filter rows with log2 fold change >= 0.6 or <= -0.6
+filtered_df <- res_silies_L2_L3Ordered %>% filter(log2FoldChange >= 0.6 | log2FoldChange <= -0.6)
+                                                  
+
+# Save the filtered dataframe to a new file
+
+print("The filtered file with pvalues <= 0.05 has been saved as 'L2_Vs_L3_DeSeq2_filtered_pvalue.txt'.")
+
+
+ # Save the filtered dataframe to a new file
+write.table(filtered_df, file = "./analysis_neel/L2_Vs_L3_DeSeq2_filtered.txt", sep = "\t", row.names = TRUE)
+ 
+print("The filtered file without NAs has been saved as 'L2_Vs_L3_DeSeq2_filtered.txt'.")
+```
+```{r}
+res <- as.data.frame(filtered_df)
+
+#Keytype ='FLYBASE" as IDs are FBgnIDs
+res$symbol <- mapIds(org.Dm.eg.db, 
+                     keys=row.names(res), 
+                     column="SYMBOL", 
+                     keytype="FLYBASE",
+                     multiVals="first")
+
+res$entrez <- mapIds(org.Dm.eg.db, 
+                     keys=row.names(res), 
+                     column="ENTREZID", 
+                     keytype="FLYBASE",
+                     multiVals="first")
+
+res$name =   mapIds(org.Dm.eg.db,
+                    keys=row.names(res), 
+                    column="GENENAME",
+                    keytype="FLYBASE",
+                    multiVals="first")
+write.csv(res, file = "L2_Vs_L3_res_GO.csv")
+
+
+
+
+
+BiocManager::install("clusterProfiler")
+library(clusterProfiler)
+gene_to_test <- rownames(filtered_df)
+gene_to_test
+GO_results <- enrichGO(gene = gene_to_test, OrgDb = "org.Dm.eg.db", keyType = "ENSEMBL", ont = "BP") # "BP" Biological process, "MF" Molecular function, "CC" cellular component
+fit <-plot(barplot(GO_results, showCategory = 20))
+fit
+write.csv(GO_results, file = "L2_Vs_L3_GO_results_BP.csv")
+
+GO_results <- enrichGO(gene = gene_to_test, OrgDb = "org.Dm.eg.db", keyType = "FLYBASE", ont = "MF")
+fit <-plot(barplot(GO_results, showCategory = 20))
+fit
+
+write.csv(GO_results, file = "L2_Vs_L3_GO_results_MF.csv")
+```
+
+
+
+## Part 3- Differential expression analysis of L3 Ctrl Vs L3_dfezF_LOF
+
+Having done the global evaluation of the data
+
+
+##### Loading the data
+
+Load the data, stored as kallisto tpm (transcript per million counts), by specifying the path and using the tximportData package. The sample file need to be formatted to have columns with appropriate sample identities. Below are the description of the functions used from "tximport" to read the count tables from kallisto.
+
+```{r}
+samples <- read.table(file.path(".", "samples_silies_L3_L3dfezF_LOF.txt"), header = TRUE)
+files_silies_L3_L3dfezFLOF <- file.path(".", "Kallisto_combined", samples$run, "abundance.tsv")
+names(files_silies_L3_L3dfezFLOF) <- c("L3_dfezF_Ctrl_rep2","L3_dfezF_Ctrl_rep3", "L3_dfezF_LOF_rep1", "L3_dfezF_LOF_rep3")
+files_silies_L3_L3dfezFLOF
+txi.kallisto.L3_L3dfezFLOF.tsv <- tximport(files_silies_L3_L3dfezFLOF, type = "kallisto", tx2gene = tx2gene, ignoreAfterBar = TRUE)
+sampleTable <- data.frame(condition = factor(rep(c("A", "B"), each = 2)))
+rownames(sampleTable) <- colnames(txi.kallisto.L3_L3dfezFLOF.tsv$counts)
+```
+Now I would run DESeq2 on the data, which will perform the differential analysis. This would report all the results without the pvalue and fold change filtering.
+
+```{r}
+dds_kallisto.L3_L3dfezFLOF <- DESeqDataSetFromTximport(txi.kallisto.L3_L3dfezFLOF.tsv, sampleTable, ~condition)
+dds_kallisto.L3_L3dfezFLOF <- dds_kallisto.L3_L3dfezFLOF[ rowSums(counts(dds_kallisto.L3_L3dfezFLOF)>1)>=2 ]
+rld_silies_L3_L3dfezFLOF <- rlog(dds_kallisto.L3_L3dfezFLOF)
+dds_silies_L3_L3dfezFLOF <- DESeq(dds_kallisto.L3_L3dfezFLOF)
+res_silies_L3_L3dfezFLOF <- results(dds_silies_L3_L3dfezFLOF)
+```
+#### MA-Plot
+
+From the DESeq2 vignette: The function plotMA shows the log2 fold changes attributable to a given variable over the mean of normalized counts for all the samples in the DESeqDataSet. Points will be colored red if the adjusted p value is less than 0.1. Points which fall out of the window are plotted as open triangles pointing either up or down.
+
+```{r plotMA_L3_L3dfezF, echo=TRUE}
+plotMA(results(dds_silies_L3_L3dfezFLOF, alpha = 0.01))
+```
+
+```{r}
+res_silies_L3_L3dfezFLOFOrdered <- res_silies_L3_L3dfezFLOF[order(res_silies_L3_L3dfezFLOF$pvalue),]
+write.table(as.data.frame(res_silies_L3_L3dfezFLOFOrdered), file="./data_for_tidyverse/L3_L3dfezFLOF_DeSeq2_new.csv", sep = "\t")
+counts_siiles_L3_L3dfezFLOF <- txi.kallisto.L3_L3dfezFLOF.tsv$counts
+colnames(counts_siiles_L3_L3dfezFLOF)
+write.table(counts_siiles_L3_L3dfezFLOF, file = "./data_for_tidyverse/tpm_counts_silies_L3_L3dfezFLOF.txt", sep = "\t", row.names = T)
+
+# Load the DESeq2 results file
+
+# Filter out rows with NAs in the Lof2FC column
+filtered_df <- res_silies_L3_L3dfezFLOFOrdered %>% filter(!is.na(log2FoldChange))
+
+# Filter out rows with pvalues > 0.05
+filtered_df <- res_silies_L3_L3dfezFLOFOrdered %>% filter(pvalue <= 0.05)
+
+
+# Filter rows with log2 fold change >= 0.6 or <= -0.6
+filtered_df <- res_silies_L3_L3dfezFLOFOrdered %>% filter(log2FoldChange >= 0.6 | log2FoldChange <= -0.6)
+
+
+# Save the filtered dataframe to a new file
+write.table(filtered_df, file = "./analysis_neel/L3_L3dfezF_LOF_DeSeq2_filtered.txt", sep = "\t", row.names = TRUE)
+
+print("The filtered file without NAs has been saved as 'L3_L3dfezF_LOF_DeSeq2_filtered.txt'.")
+```
+```{r}
+res <- as.data.frame(filtered_df)
+
+#Keytype ='FLYBASE" as IDs are FBgnIDs
+res$symbol <- mapIds(org.Dm.eg.db, 
+                     keys=row.names(res), 
+                     column="SYMBOL", 
+                     keytype="FLYBASE",
+                     multiVals="first")
+
+res$entrez <- mapIds(org.Dm.eg.db, 
+                     keys=row.names(res), 
+                     column="ENTREZID", 
+                     keytype="FLYBASE",
+                     multiVals="first")
+
+res$name =   mapIds(org.Dm.eg.db,
+                    keys=row.names(res), 
+                    column="GENENAME",
+                    keytype="FLYBASE",
+                    multiVals="first")
+write.csv(res, file = "L3_L3dfezF_LOF_res_GO.csv")
+
+
+
+
+
+BiocManager::install("clusterProfiler")
+library(clusterProfiler)
+gene_to_test <- rownames(filtered_df)
+gene_to_test
+GO_results <- enrichGO(gene = gene_to_test, OrgDb = "org.Dm.eg.db", keyType = "ENSEMBL", ont = "BP") # "BP" Biological process, "MF" Molecular function, "CC" cellular component
+fit <-plot(barplot(GO_results, showCategory = 20))
+fit
+write.csv(GO_results, file = "L3_L3dfezF_LOF_GO_results_BP.csv")
+
+GO_results <- enrichGO(gene = gene_to_test, OrgDb = "org.Dm.eg.db", keyType = "FLYBASE", ont = "MF")
+fit <-plot(barplot(GO_results, showCategory = 20))
+fit
+
+write.csv(GO_results, file = "L3_L3dfezF_LOF_GO_results_MF.csv")
+```
+## Part 4- Differential expression analysis of L2 Ctrl Vs L2_dfezF_GOF
+
+Same as described above but ran for L2 Vs L2_dfezF_GOF conditions.
+
+##Loading the data
+Load the data, stored as kallisto tpm (transcript per million counts), by specifying the path and using the tximportData package. The sample file need to be formatted to have columns with appropriate sample identities. Below are the description of the functions used from “tximport” to read the count tables from kallisto.
+
+```{r}
+samples <- read.table(file.path(".", "samples_silies_L2_L2dfezF_GOF.txt"), header = TRUE)
+files_silies_L2_L2dfezF_GOF <- file.path(".", "Kallisto_combined", samples$run, "abundance.tsv")
+names(files_silies_L2_L2dfezF_GOF) <- c("L2_dfezF_Ctrl_rep1","L2_dfezF_Ctrl_rep2", "L2_dfezF_GOF_rep1", " L2_dfezF_GOF_rep3")
+files_silies_L2_L2dfezF_GOF
+txi.kallisto.L2_L2dfezF_GOF.tsv <- tximport(files_silies_L2_L2dfezF_GOF, type = "kallisto", tx2gene = tx2gene, ignoreAfterBar = TRUE)
+sampleTable <- data.frame(condition = factor(rep(c("A", "B"), each = 2)))
+rownames(sampleTable) <- colnames(txi.kallisto.L3_L3dfezFLOF.tsv$counts)
+```
+Now I would run DESeq2 on the data, which will perform the differential analysis. This would report all the results without the pvalue and fold change filtering.
+
+```{r}
+dds_kallisto.L2_L2dfezF_GOF <- DESeqDataSetFromTximport(txi.kallisto.L2_L2dfezF_GOF.tsv, sampleTable, ~condition)
+dds_kallisto.L2_L2dfezF_GOF <- dds_kallisto.L2_L2dfezF_GOF[ rowSums(counts(dds_kallisto.L2_L2dfezF_GOF)>1)>=2 ]
+rld_silies_L2_L2dfezF_GOF <- rlog(dds_kallisto.L2_L2dfezF_GOF)
+dds_silies_L2_L2dfezF_GOF <- DESeq(dds_kallisto.L2_L2dfezF_GOF)
+res_silies_L2_L2dfezF_GOF <- results(dds_silies_L2_L2dfezF_GOF)
+```
+#### MA-Plot
+
+From the DESeq2 vignette: The function plotMA shows the log2 fold changes attributable to a given variable over the mean of normalized counts for all the samples in the DESeqDataSet. Points will be colored red if the adjusted p value is less than 0.1. Points which fall out of the window are plotted as open triangles pointing either up or down.
+
+```{r plotMA_L2_L2dfezF_GOF, echo=TRUE}
+plotMA(results(dds_silies_L2_L2dfezF_GOF, alpha = 0.01))
+```
+
+```{r}
+res_silies_L2_L2dfezF_GOFOrdered <- res_silies_L2_L2dfezF_GOF[order(res_silies_L2_L2dfezF_GOF$pvalue),]
+write.table(as.data.frame(res_silies_L2_L2dfezF_GOFOrdered), file="./data_for_tidyverse/L2_L2dfezF_GOF_DeSeq2_new.txt", sep = "\t")
+counts_siiles_L2_L2dfezF_GOF <- txi.kallisto.L2_L2dfezF_GOF.tsv$counts
+colnames(counts_siiles_L2_L2dfezF_GOF)
+write.table(counts_siiles_L2_L2dfezF_GOF, file = "./data_for_tidyverse/tpm_counts_silies_L2_L2dfezF_GOF.txt", sep = "\t", row.names = T)
+# Load the DESeq2 results file
+
+# Filter out rows with NAs in the Lof2FC column
+filtered_df <- res_silies_L2_L2dfezF_GOFOrdered %>% filter(!is.na(log2FoldChange))
+
+# Filter out rows with pvalues > 0.05
+filtered_df <- res_silies_L2_L2dfezF_GOFOrdered %>% filter(pvalue <= 0.05)
+
+
+# Filter rows with log2 fold change >= 0.6 or <= -0.6
+filtered_df <- res_silies_L2_L2dfezF_GOFOrdered %>% filter(log2FoldChange >= 0.6 | log2FoldChange <= -0.6)
+
+
+# Save the filtered dataframe to a new file
+write.table(filtered_df, file = "./analysis_neel/L2_L2dfezF_GOF_DeSeq2_filtered.txt", sep = "\t", row.names = TRUE)
+
+print("The filtered file without NAs has been saved as 'L2_L2dfezF_GOF_DeSeq2_filtered.txt'.")
+```
+```{r}
+res <- as.data.frame(filtered_df)
+
+#Keytype ='FLYBASE" as IDs are FBgnIDs
+res$symbol <- mapIds(org.Dm.eg.db, 
+                     keys=row.names(res), 
+                     column="SYMBOL", 
+                     keytype="FLYBASE",
+                     multiVals="first")
+
+res$entrez <- mapIds(org.Dm.eg.db, 
+                     keys=row.names(res), 
+                     column="ENTREZID", 
+                     keytype="FLYBASE",
+                     multiVals="first")
+
+res$name =   mapIds(org.Dm.eg.db,
+                    keys=row.names(res), 
+                    column="GENENAME",
+                    keytype="FLYBASE",
+                    multiVals="first")
+write.csv(res, file = "L2_L2dfezF_GOF_GO.csv")
+
+
+
+
+
+BiocManager::install("clusterProfiler")
+library(clusterProfiler)
+gene_to_test <- rownames(filtered_df)
+gene_to_test
+GO_results <- enrichGO(gene = gene_to_test, OrgDb = "org.Dm.eg.db", keyType = "ENSEMBL", ont = "BP") # "BP" Biological process, "MF" Molecular function, "CC" cellular component
+fit <-plot(barplot(GO_results, showCategory = 20))
+fit
+write.csv(GO_results, file = "L2_L2dfezF_GOF_GO_results_BP.csv")
+
+GO_results <- enrichGO(gene = gene_to_test, OrgDb = "org.Dm.eg.db", keyType = "FLYBASE", ont = "MF")
+fit <-plot(barplot(GO_results, showCategory = 20))
+fit
+
+write.csv(GO_results, file = "L2_L2dfezF_GOF_GO_results_MF.csv")
+```
