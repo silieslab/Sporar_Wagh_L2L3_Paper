@@ -1,0 +1,471 @@
+%% Luis test script
+close all;
+clear all;
+clc;
+addpath(genpath('/Users/ksporar/Documents/MATLAB/TP_code_Katja'))
+[fname]=uigetdir; % displays a modal dialog box showing the folders that are inside the current working directory
+e=dir(fname); % dir lists the files and folders in the MATLAB? current folder
+numberOfFolders = length(e)
+cd([fname '/' e(1).name]);
+%%
+
+
+%ms: prompt for an image folder
+[fname]=pwd; % Luis commented out.
+e=dir(fname);
+cd(fname);
+out.fileloc = fname;
+ind = strfind(out.fileloc,'/'); %Find the pattern / in string out.fileloc.
+out.dataID = out.fileloc(ind(end-1)+1:(ind(end)-1));
+
+% Luis test
+imageFolder = uigetdir;
+cd(imageFolder)
+%%
+
+%ms: find the .lsm file 
+d=dir('*.lsm');
+% filename = [fname '/' d.name]
+filename = [d.name];
+
+% If there is no .lsm file then look for .xml file.
+if isempty(filename)
+    folder = dir('*.xml');
+    filename = [folder.name];
+    filetype = 'xml';
+else
+    filetype = 'lsm';
+end
+
+   
+%% Extract information from imaging file
+
+switch filetype
+    case 'lsm'
+        [lsminf, scanInfo, ~] = lsminfo(filename);
+        imagingInfo = lsminf;
+    case 'xml'
+        [imagingInfo, scanInfo] = getXmlInfo(filename);
+end
+
+%% Information of stimulus time series.
+
+% Number of images.
+nImages = numel(imagingInfo.stimulusFrames); % Number of frames.
+% Image depth in bits.
+imageDepth = str2double(scanInfo.bitDepth);% Bit depth.
+% Image size in number of pixels.
+height = str2double(scanInfo.linesPerFrame);% lines per frame.
+width = str2double(scanInfo.pixelsPerLine);% pixels per line.
+
+%% Define output file.
+% Remove extension from filename.
+nameNoExt = regexp(filename, ['.' filetype], 'split');
+% Create filename for aligned images, with TIFF format.
+alignedFile = [nameNoExt{1}, '_aligned.tif'];
+% Save time stamps.
+timeStampsFile = [nameNoExt{1} '_times.mat'];
+% Extract the time stamps.
+stimulusFrames = [imagingInfo.stimulusFrames{:}];
+% Compute mean frame duration from relative frame times. 
+relativeFrameTimes = {stimulusFrames(:).relativeTime};
+relativeFrameTimes = str2double(relativeFrameTimes');
+relFrameLength = mean(diff(relativeFrameTimes));
+% Compute mean frame duration from relative frame times. 
+absoluteFrameTimes = {stimulusFrames(:).absoluteTime};
+absoluteFrameTimes = str2double(absoluteFrameTimes');
+absFrameLength = mean(diff(absoluteFrameTimes));
+% Frame duration from microscope settings.
+framePeriod = str2double(scanInfo.framePeriod);
+% Time stamps, relative or absolute?.
+ts = relativeFrameTimes;
+% ts = imagingInfo.TimeStamps.TimeStamps;
+save(timeStampsFile, 'ts');
+% fr = mean(diff(ts));
+
+%% Read tiff time series.
+
+% Read the reference frames.
+switch filetype
+    case 'lsm'
+        imageArray = tiffread(filename,1:2:2*nImages);
+    case 'xml'
+        imageArray = readStimTimeSeries(filename, imagingInfo);
+    otherwise
+        error(['Unrecognized file type: ' filetype])
+end
+
+%% Perform alignment.
+% Create reference stack, using the first 30 frames.
+refStack = zeros(height, width, 30);
+switch filetype
+    case 'lsm'
+        for iFrame = 1: 30
+            refStack(:, :, iFrame) = imageArray(iFrame).data;
+        end
+        % Maximum intensity projection of reference stack.
+        refFrame = max(refStack, [], 3);
+        % ref = uint8(refFrame);
+        % Read reference image.
+        % im = tiffread(filename, refFrame*2-1);
+        % f = im2double(im.data);
+    case 'xml'
+        for iFrame = 1: 30
+            refStack(:, :, iFrame) = imageArray(:, :, iFrame);
+        end
+        % Maximum intensity projection of reference stack.
+        refFrame = max(refStack, [], 3);
+    otherwise
+        error(['Unrecognized file type: ' filetype])        
+end
+
+%% Luis trial, do not know why refStack was created but not used in alignment.
+% switch filetype
+%     case 'lsm'
+%         imageToRegister = imageArray.data;
+%     case 'xml'
+%         imageToRegister = imageArray;
+%     otherwise
+%         error(['Unrecognized file type: ' filetype])        
+% end
+
+%% Perform alignment based on maximizing image crosscorrelation in the Fourier space.
+
+% Initialize median filtered image.
+medianFilteredImages = zeros(height * width, nImages);
+% Fourier transform of reference image, DC in (1,1)   [DO NOT FFTSHIFT].
+refImageFT = fft2(refFrame);
+% Upsampling factor (integer). Images will be registered to within 1/usfac 
+% of a pixel. For example usfac = 20 means the images will be registered 
+% within 1/20 of a pixel. (default = 1)
+upSamplingFactor = 1;
+
+for jImage = 1: nImages
+    % Fourier transform of image to register, DC in (1,1) [DO NOT FFTSHIFT].
+    switch filetype
+        case 'lsm'
+            jImageToRegister = imageArray(jImage).data;
+            jImageFT = fft2(im2double(jImageToRegister));
+        case 'xml'
+            jImageToRegister = imageArray(:, :, jImage);
+            jImageFT = fft2(im2double(jImageToRegister));
+        otherwise
+            error(['Unrecognized file type: ' filetype])        
+    end
+    
+    [~, registeredImageFT] = dftregistration(refImageFT, jImageFT, ...
+                                             upSamplingFactor);    
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    [output, ~] = dftregistration(jImageFT, refImageFT, upSamplingFactor);
+% Commented out this block, to try the output of dftregistration.
+    % net_row_shift net_col_shift   Pixel shifts between images
+    yPixelShift = output(1,3);
+    xPixelShift = output(1,4);
+    % diffphase: Global phase difference between the two images (should be
+    % zero if images are non-negative).
+    phaseDiff = output(1,2);
+    % Apply inverse Fourier transform shift, to get real pixel shifts.
+    nPixelsY = ifftshift(-fix(height / 2) : ceil(height / 2) - 1);
+    nPixelsX = ifftshift(-fix(width / 2) : ceil(width / 2) - 1);
+    [nPixelsX, nPixelsY] = meshgrid(nPixelsX, nPixelsY);
+%     pixelShiftFactor = exp(-1i*2*pi*(yPixelShift * nPixelsY / height + ...
+%                                  xPixelShift * nPixelsX / width));
+    pixelShiftFactor = exp(1i*2*pi*(yPixelShift * nPixelsY / height + ...
+                                     xPixelShift * nPixelsX / width));
+%     g_reg = ifft2(jImageFT .* pixelShiftFactor) .* exp(1i*phaseDiff);
+    g_reg = ifft2(jImageFT .* pixelShiftFactor) .* exp(-1i*phaseDiff);
+%     g_reg = uint8(g_reg * 2 ^ imageDepth); %Luis.
+%     g_reg = uint8(g_reg * 2 ^ (-imageDepth + 8)); %Luis.
+    g_reg = uint16(g_reg); %Luis.
+    
+    registeredImage(:, :, jImage) = uint16(ifft2(registeredImageFT));
+    unregisteredImage(:, :, jImage) = jImageToRegister;
+    
+    if jImage == 1
+        imwrite(g_reg, alignedFile);
+    else
+        imwrite(g_reg, alignedFile, 'WriteMode', 'append');
+    end
+    
+    % ms let's try this: put g_reg into a matrix and keep this in matlab
+    % format
+    unregIm(:,:,jImage) = jImageToRegister;
+    regIm(:,:,jImage) = (g_reg);
+   
+    
+    % median filter - needed for normalization
+    fm = medfilt2(g_reg, [5 5]);
+    medianFilteredImages(:,jImage) = reshape(fm, height * width,1)+1;
+end
+
+%ms: could also use filtered Image Sequence:
+ImSeq = reshape(medianFilteredImages,[height, width, nImages]);
+% out.ch1a = ImSeq;
+
+%store unaligned image in output
+out.ch1 = im2double(unregIm);
+
+%store aligned image in output
+out.ch1a = im2double(regIm);
+
+
+%% Write to out.xml the info in scanInfo struct.
+out.xml = scanInfo;
+% read stimulus_output file and add stimulus information to out 
+% (taken from read_roi_data_all_1ch_mac or clean_up_dir2 within) 
+
+%imaging information from reading lsm file goes here.
+%         out.xml.datetime = out.xml.datetime{1}(1:(ind{1}));
+
+%% Rename frametime, frame rate, and z depth for subsequent scripts.
+out.xml.frametime = framePeriod; %framePeriod
+%         temp = xml_read_1ch(d(2).name,'DimensionDescription DimID="T"',3);
+%         out.xml.framerate = 1/temp;
+out.xml.framerate = 1/framePeriod; 
+      
+%         out.xml.zdepth = temp;
+out.xml.zdepth = scanInfo.positionCurrent.ZAxis; % positionCurrent.zAxis.
+
+%% Commented out.
+% out.xml.yPos = scanInfo.SAMPLE_0Y; % positionCurrent.yAxis. out.xml.xPos
+% = scanInfo.SAMPLE_0X; % positionCurrent.xAxis.
+% 
+% 
+% %         temp = xml_read_1ch(d(2).name,'Voxel-Width',2);
+% %         out.xml.xres = temp/1000;
+% out.xml.xres = imagingInfo.VoxelSizeX; % micronsPerPixel.XAxis
+% %         
+% %         temp = xml_read_1ch(d(2).name,'Voxel-Height',2);
+% %         out.xml.yres = temp/1000;
+% out.xml.yres = imagingInfo.VoxelSizeY; % micronsPerPixel.YAxis
+% 
+%         
+% %         temp = xml_read_1ch(d(2).name,'Zoom',2);
+% %         out.xml.zoom = temp;
+% out.xml.zoom = scanInfo.ZOOM_X; % Optical zoom.
+% 
+% out.xml.rotation = scanInfo.ROTATION; % rotation.
+% out.xml.PMT1Gain = scanInfo.DETECTOR_GAIN; % 
+% out.xml.PMT2Gain = scanInfo.DETECTOR_GAIN; % 
+% 
+% out.xml.bitrate = scanInfo.BITS_PER_SAMPLE; %bit depth.
+% out.xml.wavelength = scanInfo.WAVELENGTH;%laseWavelength.
+% out.xml.laserpower = scanInfo.POWER;%laserPower
+% out.xml.objective = scanInfo.ENTRY_OBJECTIVE;%objectiveLens.
+% 
+% %         temp=xml_read_1ch(d(2).name,'Scan Speed',2);
+% %         out.xml.scanper = temp;
+% %         
+% 
+%         
+% out.xml.pixperline = imagingInfo.DimensionX;%pixels per line.
+%         
+% %         temp = xml_read_1ch(d(2).name,'Format-Height',2);
+% %         out.xml.linesperframe = temp;
+% out.xml.linesperframe = imagingInfo.DimensionY;% lines per frame.
+%         
+% %         temp = xml_read_1ch(d(2).name,'<FrameCount>',1);
+% %         temp = temp{1};
+% %         bind = strfind(temp,' ');
+% %         out.xml.frames = str2num(temp(bind(end-1):bind(end)));
+% out.xml.frames = imagingInfo.TIMESTACKSIZE;% number of images. 
+% 
+% % %         temp = xml_read_1ch(d(1).name,'<Dwell_Time>',0);
+% %         out.xml.dwellt = (1/out.xml.scanper)*10^6/out.xml.pixperline; % temp!
+
+
+
+
+%% Process stimulus file.
+cd ..
+d = dir('_stimulus_output*');
+A = importdata(d.name);
+ch3 = A.data(:,4); %was 3
+frame_nums = A.data(:,8); %was 7
+
+fid=fopen(d.name,'r');
+currline=fgetl(fid);
+ind = strfind(currline,'\');
+stim_type = currline(ind(end)+1:end-5);
+fclose(fid);
+
+%**********************************************************
+%ms, 150922, hopefully just temporarily,
+%to fix problem with stimulus output file (skipping of frame counts), after
+%testing the Bruker system
+
+% %finding all the transitions, getting rid of one frame long ones
+inds = find(diff(A.data(:,8)));
+bad_inds = (diff(inds)==1);
+inds(bad_inds)=[];
+%using these to continuously count up
+corr_stimvals = zeros(size(A.data,1),1);
+for iFrame=1:length(inds)-1
+    for jj=inds(iFrame):inds(iFrame+1)-1
+        corr_stimvals(jj)=iFrame;
+    end
+end
+%filling in the last one
+for iFrame=length(inds)
+    for jj=inds(iFrame):size(A.data,1)
+        corr_stimvals(jj)=iFrame;
+    end
+end
+A.data(:,8)=corr_stimvals;
+%******************************************************************
+
+%find average value of stimulus for each imaging frame
+avrstimval = zeros(A.data(end,8),1); % 8s were all 7
+fstimval = zeros(A.data(end,8),1);
+fstimpos1 = zeros(A.data(end,8),1);
+fstimpos2 = zeros(A.data(end,8),1);
+for k = 1:(A.data(end,8))
+    inds = find(A.data(:,8) == k);
+    if(~isempty(inds))
+        stimval = A.data(inds,4);
+%         stimvalcont = A.data(inds,3); %could add this if needed
+%         stimpos1 = A.data(inds,4);
+%         stimpos2 = A.data(inds,6);
+        stimpos1 = A.data(inds,5); %ms, for jl type stimulus output files
+        stimpos2 = A.data(inds,7); %ms, for jl type stimulus output files
+        avrstimval(k) = mean(stimval);
+        fstimval(k) = stimval(1);
+        fstimpos1(k) = stimpos1(1);
+        fstimpos2(k) = stimpos2(1);
+    end
+end
+
+save('stim','ch3','avrstimval','fstimval','frame_nums','stim_type','fstimpos1','fstimpos2');
+
+
+% load('stim');
+out.ch3 = ch3;
+out.avrstimval = avrstimval;
+out.fstimval = fstimval;
+out.frame_nums = frame_nums;
+out.stim_type = stim_type;
+out.fstimpos1 = fstimpos1;
+out.fstimpos2 = fstimpos2;
+        
+        
+% % % % % %                 out.ch1a = zeros(out.xml.linesperframe,out.xml.pixperline,out.xml.frames,'uint16');
+% % % % % % %         out.ch2a = zeros(out.xml.linesperframe,out.xml.pixperline,out.xml.frames,'uint16');
+% % % % % %         %strs = {'CH1_aligned','CH2_tocoords'};
+% % % % % %         strs = {'Ch1_aligned','Ch2_tocoords'};
+% % % % % %         for j = 1%:2
+% % % % % %             d=dir(sprintf('*%s.tif',strs{j}));
+% % % % % %             if (length(d)==1)
+% % % % % %                 for k = 1:out.xml.frames
+% % % % % %                     str = sprintf('out.ch%da(:,:,k)=imread(d.name,k);',j);
+% % % % % %                     eval(str);
+% % % % % %                 end
+% % % % % %             else
+% % % % % %                 disp(['error in file set ' out.fileloc ' channel ' num2str(j)]);
+% % % % % %             end
+% % % % % %         end
+
+        save('data_file','out');
+
+        cd ..
+%% play with aligned and non-aligned image sequences
+% make movie of aligned image series and play
+
+% %make movie of raw data
+% n=num_img;
+% for j=1:n
+%     image(im(j).data)
+%     N(j) = getframe;
+% end
+% % % movie(N)
+% % movie2avi(N,'original_image')
+% % 
+% % %make movie of aligned data before filtering
+% n=num_img;
+% for j=1:n
+%     imagesc(squeeze(regIm(:,:,j)))
+%     M(j) = getframe;
+% end
+% % movie(M)
+% movie2avi(N,'aligned_noFilter')
+% 
+% 
+% %make movie of aligned data after median filtering
+% n=num_img;
+% for j=1:n
+%     imagesc(squeeze(ImSeq(:,:,j)))
+%     K(j) = getframe;
+% end
+% % movie(M)
+% movie2avi(K,'aligned_and_medfilt2')
+%% Make movie for Bruker images.
+imagesFolder = regexp(filename, '.xml', 'split');
+cd(imagesFolder{1});
+% Raw data movie.
+writerObjRaw = VideoWriter('original_series.mp4', 'MPEG-4');
+open(writerObjRaw);
+for kImage = 1 : nImages
+    imagesc(imageArray(:, :, kImage))
+%     rawMovie(kImage) = getframe;
+    frame = getframe;
+    writeVideo(writerObjRaw, frame);
+end
+close(writerObjRaw);
+
+% Aligned unfiltered data movie.
+writerObjAligUnfilt = VideoWriter('aligned_unfiltered_series_16bit.mp4', 'MPEG-4');
+open(writerObjAligUnfilt);
+for kImage = 1 : nImages
+    imagesc(squeeze(regIm(:, :, kImage)))
+%     alignUnfiltMovie(kImage) = getframe;
+    frame = getframe;
+    writeVideo(writerObjAligUnfilt, frame);
+end
+close(writerObjAligUnfilt);
+
+% Aligned unfiltered data movie. Luis
+writerObjAligUnfiltLR = VideoWriter('aligned_unfiltered_series_16bit_lr.mp4', 'MPEG-4');
+open(writerObjAligUnfiltLR);
+for kImage = 1 : nImages
+    imagesc(squeeze(registeredImage(:, :, kImage)))
+%     alignUnfiltMovie(kImage) = getframe;
+    frame = getframe;
+    writeVideo(writerObjAligUnfiltLR, frame);
+end
+close(writerObjAligUnfiltLR);
+
+
+% Aligned median-filtered data movie.
+writerObjAligFilt = VideoWriter('aligned_medianFiltered_series.mp4', 'MPEG-4');
+open(writerObjAligFilt);
+for kImage = 1 : nImages
+    imagesc(squeeze(ImSeq(:, :, kImage)))
+%     alignMedfiltMovie(kImage) = getframe;
+    frame = getframe;
+    writeVideo(writerObjAligFilt, frame);
+end
+close(writerObjAligFilt);
+
+
+%% code from original function that claculates dF/Fs and creates another tiff that displays that
+%relies on some prestim image that we typically don't record.
+
+
+
+% % deltaF/F0
+% Inorm = I;
+% for k=1:nr*nc
+%     I0(k) = mean(Inorm(k,1:round(pre_stim/fr)));
+%     Inorm(k,:) = 100*(Inorm(k,:)-I0(k))/I0(k);
+% end
+% Imax = max(max(Inorm));
+% Imin = min(min(Inorm));
+% 
+% % save normalized images
+% output_file = [s{1}, '_aligned_norm.tif'];
+% imwrite(uint8(reshape(I0, nr, nc)), output_file);
+% for j=1:num_img
+%     imwrite(uint8(reshape(Inorm(:,j), nr, nc)), output_file, 'WriteMode', 'append');
+% end
+% 
+% end
+% 

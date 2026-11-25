@@ -1,0 +1,43 @@
+%% Batch alignment of two-photon time series.
+% This script performs the alignment of all selected folders for a given
+% experimental day for a given experimental fly.
+%% Clean workspace.
+close all;
+clear all;
+c
+addpath(genpath('/Users/ksporar/Documents/MATLAB/TP_code_Katja'))
+
+% Get the fly folder to analyze.
+flyFolder = uigetdir;
+% Get the imaging folders for the experiments on the given fly on the desired
+% date, i.e., imaging files inside flyFolder.
+imagingFolders = dir([fname filesep 'I*']);
+
+%% Process all images in the 
+for i=3:numberOfFolders
+
+
+    if e(i).isdir
+        if e(i).name(1)=='I';
+        %if dir('I*') %is the first letter an I
+            cd([fname '/' e(i).name]);  %ms: z.B. .../110601m_fly1/LDM...
+            lsm_align_single_ms_lr     
+        cd ..
+        end
+    end
+end
+
+%%
+
+
+allSubFolders = genpath(fname); % Get list of all subfolders.
+remain = allSubFolders; % Parse into a cell array. Scan through them separating them.
+listOfFolderNames = {}; %
+while true
+	[singleSubFolder, remain] = strtok(remain, ';');
+	if isempty(singleSubFolder)
+		break;
+	end
+	listOfFolderNames = [listOfFolderNames singleSubFolder];
+end
+numberOfFolders = length(e)
