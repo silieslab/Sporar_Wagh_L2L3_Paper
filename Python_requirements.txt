@@ -1,0 +1,11 @@
+Install packages below for Python 2.7 environment
+matplotlib
+numpy
+openpyxl
+pandas
+pingouin
+roipoly
+scikit-image
+scikit-learn
+scipy
+seaborn
